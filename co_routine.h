@@ -44,20 +44,23 @@ typedef int (*pfn_co_eventloop_t)(void *);
 typedef void *(*pfn_co_routine_t)( void * );
 
 //2.co_routine
-
+//  新建一个协程
 int 	co_create( stCoRoutine_t **co,const stCoRoutineAttr_t *attr,void *(*routine)(void*),void *arg );
+// 恢复协程的执行，如果是第一次执行
 void    co_resume( stCoRoutine_t *co );
 void    co_yield( stCoRoutine_t *co );
 void    co_yield_ct(); //ct = current thread
 void    co_release( stCoRoutine_t *co );
 
+// 获得当前线程上正在执行的协程，即栈顶的协程
 stCoRoutine_t *co_self();
 
 int		co_poll( stCoEpoll_t *ctx,struct pollfd fds[], nfds_t nfds, int timeout_ms );
+// 事件推动器，推送所有协程运行
 void 	co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg );
 
 //3.specific
-
+// 实现协程局部变量
 int 	co_setspecific( pthread_key_t key, const void *value );
 void *	co_getspecific( pthread_key_t key );
 

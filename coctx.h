@@ -1,4 +1,4 @@
-/*
+﻿/*
 * Tencent is pleased to support the open source community by making Libco available.
 
 * Copyright (C) 2014 THL A29 Limited, a Tencent company. All rights reserved.
@@ -25,6 +25,7 @@ struct coctx_param_t
 	const void *s1;
 	const void *s2;
 };
+// 协程执行上下文，包括寄存器，执行栈底、栈大小
 struct coctx_t
 {
 #if defined(__i386__)
@@ -38,5 +39,6 @@ struct coctx_t
 };
 
 int coctx_init( coctx_t *ctx );
+// 设置协程的初始执行条件，如协程上下文中的EIP等
 int coctx_make( coctx_t *ctx,coctx_pfn_t pfn,const void *s,const void *s1 );
 #endif

@@ -24,7 +24,7 @@ v=debug
 include co.mk
 
 ########## options ##########
-CFLAGS += -g -fno-strict-aliasing -O2 -Wall -export-dynamic \
+CFLAGS += -g -fno-strict-aliasing -Wall -export-dynamic \
 	-Wall -pipe  -D_GNU_SOURCE -D_REENTRANT -fPIC -Wno-deprecated -m64
 
 UNAME := $(shell uname -s)
@@ -38,7 +38,7 @@ endif
 COLIB_OBJS=co_epoll.o co_routine.o co_hook_sys_call.o coctx_swap.o coctx.o
 #co_swapcontext.o
 
-PROGS = colib example_poll example_echosvr example_echocli example_thread  example_cond example_specific example_copystack example_closure
+PROGS = colib hellosrv example_poll example_echosvr example_echocli example_thread  example_cond example_specific example_copystack example_closure
 
 all:$(PROGS)
 
@@ -49,6 +49,8 @@ libcolib.a: $(COLIB_OBJS)
 libcolib.so: $(COLIB_OBJS)
 	$(BUILDSHARELIB) 
 
+hellosrv: hellosrv.o
+	$(BUILDEXE)
 example_echosvr:example_echosvr.o
 	$(BUILDEXE) 
 example_echocli:example_echocli.o

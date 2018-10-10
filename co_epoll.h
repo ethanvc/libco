@@ -1,4 +1,4 @@
-/*
+﻿/*
 * Tencent is pleased to support the open source community by making Libco available.
 
 * Copyright (C) 2014 THL A29 Limited, a Tencent company. All rights reserved.
@@ -30,12 +30,14 @@
 
 #include <sys/epoll.h>
 
+// 封装了epoll和kevent的差异
 struct co_epoll_res
 {
-	int size;
-	struct epoll_event *events;
+	int size; // events数组的大小
+	struct epoll_event *events; // epoll_wait的参数
 	struct kevent *eventlist;
 };
+// 超时为毫秒数
 int 	co_epoll_wait( int epfd,struct co_epoll_res *events,int maxevents,int timeout );
 int 	co_epoll_ctl( int epfd,int op,int fd,struct epoll_event * );
 int 	co_epoll_create( int size );

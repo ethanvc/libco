@@ -1,4 +1,4 @@
-/*
+﻿/*
 * Tencent is pleased to support the open source community by making Libco available.
 
 * Copyright (C) 2014 THL A29 Limited, a Tencent company. All rights reserved.
@@ -49,7 +49,7 @@ typedef long long ll64_t;
 
 struct rpchook_t
 {
-	int user_flag;
+	int user_flag; // 描述符的特征，缓存下来，避免每次做系统调用去取这个值
 	struct sockaddr_in dest; //maybe sockaddr_un;
 	int domain; //AF_LOCAL , AF_INET
 
@@ -332,13 +332,13 @@ ssize_t read( int fd, void *buf, size_t nbyte )
 	HOOK_SYS_FUNC( read );
 	
 	if( !co_is_enable_sys_hook() )
-	{
+	{// 线程未启用hook时，直接转发给系统调用
 		return g_sys_read_func( fd,buf,nbyte );
 	}
 	rpchook_t *lp = get_by_fd( fd );
-
+	
 	if( !lp || ( O_NONBLOCK & lp->user_flag ) ) 
-	{
+	{// 描述符未登记或本身为非阻塞模式时，直接进行系统调用
 		ssize_t ret = g_sys_read_func( fd,buf,nbyte );
 		return ret;
 	}
@@ -348,10 +348,10 @@ ssize_t read( int fd, void *buf, size_t nbyte )
 	struct pollfd pf = { 0 };
 	pf.fd = fd;
 	pf.events = ( POLLIN | POLLERR | POLLHUP );
-
+	// 关键，下面的函数可能导致协程切换
 	int pollret = poll( &pf,1,timeout );
 
-	ssize_t readret = g_sys_read_func( fd,(char*)buf ,nbyte );
+	ssize_t readret = g_sys_read_func( fd,(char*)buf ,nbyte ); 
 
 	if( readret < 0 )
 	{
@@ -955,7 +955,7 @@ struct hostent *co_gethostbyname(const char *name)
 #endif
 
 
-void co_enable_hook_sys() //�⺯������������,�����ļ��ᱻ���ԣ�����
+void co_enable_hook_sys() //这函数必须在这里,否则本文件会被忽略！！！
 {
 	stCoRoutine_t *co = GetCurrThreadCo();
 	if( co )

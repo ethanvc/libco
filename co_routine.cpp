@@ -42,12 +42,14 @@
 
 extern "C"
 {
+	// 汇编实现的上下文切换，需要操作寄存器来保存执行上下文，并设置IP跳转到新的协程执行
 	extern void coctx_swap( coctx_t *,coctx_t* ) asm("coctx_swap");
 };
 using namespace std;
 stCoRoutine_t *GetCurrCo( stCoRoutineEnv_t *env );
 struct stCoEpoll_t;
 
+// 协程执行环境，一个线程对应一个
 struct stCoRoutineEnv_t
 {
 	stCoRoutine_t *pCallStack[ 128 ];
@@ -113,11 +115,12 @@ static unsigned long long GetTickMS()
 	return u;
 #endif
 }
-
+// 获取线程ID，需要考虑进程clone的问题
 static pid_t GetPid()
 {
     static __thread pid_t pid = 0;
     static __thread pid_t tid = 0;
+	// linux复制线程的方式导致这里需要如此判断
     if( !pid || !tid || pid != getpid() )
     {
         pid = getpid();
@@ -188,6 +191,8 @@ void RemoveFromLink(T *ap)
 	ap->pLink = NULL;
 }
 
+// 带头结点的单向链表
+// 将ap节点插入apLink指定的链表的尾部
 template <class TNode,class TLink>
 void inline AddTail(TLink*apLink,TNode *ap)
 {
@@ -209,6 +214,7 @@ void inline AddTail(TLink*apLink,TNode *ap)
 	}
 	ap->pLink = apLink;
 }
+// 取出头结点
 template <class TNode,class TLink>
 void inline PopHead( TLink*apLink )
 {
@@ -235,6 +241,7 @@ void inline PopHead( TLink*apLink )
 	}
 }
 
+// 将链表apOther放到apLink的尾部
 template <class TNode,class TLink>
 void inline Join( TLink*apLink,TLink *apOther )
 {
@@ -309,6 +316,7 @@ static stStackMem_t* co_get_stackmem(stShareStack_t* share_stack)
 // ----------------------------------------------------------------------------
 struct stTimeoutItemLink_t;
 struct stTimeoutItem_t;
+// 封装了epoll和定时功能
 struct stCoEpoll_t
 {
 	int iEpollFd;
@@ -316,48 +324,51 @@ struct stCoEpoll_t
 
 	struct stTimeout_t *pTimeout;
 
-	struct stTimeoutItemLink_t *pstTimeoutList;
+	struct stTimeoutItemLink_t *pstTimeoutList; // 已超时项，等待被调度
 
-	struct stTimeoutItemLink_t *pstActiveList;
+	struct stTimeoutItemLink_t *pstActiveList; // 活跃可调度项
 
 	co_epoll_res *result; 
 
 };
 typedef void (*OnPreparePfn_t)( stTimeoutItem_t *,struct epoll_event &ev, stTimeoutItemLink_t *active );
 typedef void (*OnProcessPfn_t)( stTimeoutItem_t *);
+// 时间轮中的一个定时器的数据表述
 struct stTimeoutItem_t
 {
-
 	enum
 	{
 		eMaxTimeout = 40 * 1000 //40s
 	};
 	stTimeoutItem_t *pPrev;
 	stTimeoutItem_t *pNext;
-	stTimeoutItemLink_t *pLink;
+	stTimeoutItemLink_t *pLink; // 指向表头
 
-	unsigned long long ullExpireTime;
+	unsigned long long ullExpireTime; // 过期绝对时间，毫秒表示
 
-	OnPreparePfn_t pfnPrepare;
+	OnPreparePfn_t pfnPrepare; // OnPollPreparePfn
 	OnProcessPfn_t pfnProcess;
 
-	void *pArg; // routine 
-	bool bTimeout;
+	void *pArg; // routine 一般传递当前协程的指针 stCoRoutine_t
+	bool bTimeout; // 是否已经超时
 };
+// 链表头节点
 struct stTimeoutItemLink_t
 {
 	stTimeoutItem_t *head;
 	stTimeoutItem_t *tail;
 
 };
+// 时间轮数据结构
 struct stTimeout_t
 {
-	stTimeoutItemLink_t *pItems;
-	int iItemSize;
+	stTimeoutItemLink_t *pItems; // 表示轮的数组
+	int iItemSize; // 一个轮有多少个格子，且一个格子代表1ms，这是定时器的最低精度了
 
-	unsigned long long ullStart;
-	long long llStartIdx;
+	unsigned long long ullStart; // 起始时间
+	long long llStartIdx; // 当前格子的索引
 };
+// 新建一个时间轮对象
 stTimeout_t *AllocTimeout( int iSize )
 {
 	stTimeout_t *lp = (stTimeout_t*)calloc( 1,sizeof(stTimeout_t) );	
@@ -370,11 +381,17 @@ stTimeout_t *AllocTimeout( int iSize )
 
 	return lp;
 }
+// 释放时间轮对象
+// ??链表对象不用删除吗
 void FreeTimeout( stTimeout_t *apTimeout )
 {
 	free( apTimeout->pItems );
 	free ( apTimeout );
 }
+// 添加一个定时器
+// @param allNow  
+// @ret 0 成功添加
+// @ret other 失败，返回值为return语句的行号
 int AddTimeout( stTimeout_t *apTimeout,stTimeoutItem_t *apItem ,unsigned long long allNow )
 {
 	if( apTimeout->ullStart == 0 )
@@ -383,14 +400,14 @@ int AddTimeout( stTimeout_t *apTimeout,stTimeoutItem_t *apItem ,unsigned long lo
 		apTimeout->llStartIdx = 0;
 	}
 	if( allNow < apTimeout->ullStart )
-	{
+	{// 定时器起始时间不能小于时间轮创建的初始时间
 		co_log_err("CO_ERR: AddTimeout line %d allNow %llu apTimeout->ullStart %llu",
 					__LINE__,allNow,apTimeout->ullStart);
 
 		return __LINE__;
 	}
 	if( apItem->ullExpireTime < allNow )
-	{
+	{// 已经过期了的，不允许添加
 		co_log_err("CO_ERR: AddTimeout line %d apItem->ullExpireTime %llu allNow %llu apTimeout->ullStart %llu",
 					__LINE__,apItem->ullExpireTime,allNow,apTimeout->ullStart);
 
@@ -406,10 +423,14 @@ int AddTimeout( stTimeout_t *apTimeout,stTimeoutItem_t *apItem ,unsigned long lo
 
 		//return __LINE__;
 	}
+	// 添加到对应的格子里面去，一个格子过期，所有的都会过期
 	AddTail( apTimeout->pItems + ( apTimeout->llStartIdx + diff ) % apTimeout->iItemSize , apItem );
 
 	return 0;
 }
+// 将所有过期的定时器取出来
+// @param allNow 超过该时刻认为是过期的定时器
+// @param[out] apResult 过期定时器链表
 inline void TakeAllTimeout( stTimeout_t *apTimeout,unsigned long long allNow,stTimeoutItemLink_t *apResult )
 {
 	if( apTimeout->ullStart == 0 )
@@ -431,16 +452,18 @@ inline void TakeAllTimeout( stTimeout_t *apTimeout,unsigned long long allNow,stT
 	{
 		return;
 	}
+	// 从格子里面取出过期的定时器
 	for( int i = 0;i<cnt;i++)
 	{
 		int idx = ( apTimeout->llStartIdx + i) % apTimeout->iItemSize;
 		Join<stTimeoutItem_t,stTimeoutItemLink_t>( apResult,apTimeout->pItems + idx  );
 	}
+	// 更新时间轮的基准时间
 	apTimeout->ullStart = allNow;
 	apTimeout->llStartIdx += cnt - 1;
-
-
 }
+
+// 协程启动函数
 static int CoRoutineFunc( stCoRoutine_t *co,void * )
 {
 	if( co->pfn )
@@ -457,7 +480,7 @@ static int CoRoutineFunc( stCoRoutine_t *co,void * )
 }
 
 
-
+// 创建一个协程，主协程不包含pfn
 struct stCoRoutine_t *co_create_env( stCoRoutineEnv_t * env, const stCoRoutineAttr_t* attr,
 		pfn_co_routine_t pfn,void *arg )
 {
@@ -491,14 +514,17 @@ struct stCoRoutine_t *co_create_env( stCoRoutineEnv_t * env, const stCoRoutineAt
 	lp->pfn = pfn;
 	lp->arg = arg;
 
+	// 处理共享栈逻辑，共享栈有多个，采用hash轮转进行分配
 	stStackMem_t* stack_mem = NULL;
 	if( at.share_stack )
 	{
+		// 使用共享栈
 		stack_mem = co_get_stackmem( at.share_stack);
 		at.stack_size = at.share_stack->stack_size;
 	}
 	else
 	{
+		// 协程私有栈，每个协程一个执行栈
 		stack_mem = co_alloc_stackmem(at.stack_size);
 	}
 	lp->stack_mem = stack_mem;
@@ -543,7 +569,7 @@ void co_release( stCoRoutine_t *co )
 }
 
 void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co);
-
+// 恢复一个协程的执行
 void co_resume( stCoRoutine_t *co )
 {
 	stCoRoutineEnv_t *env = co->env;
@@ -558,6 +584,7 @@ void co_resume( stCoRoutine_t *co )
 
 
 }
+// 让出执行流，将当前协程放入协程栈，当前线程的前一个线程拿出来执行
 void co_yield_env( stCoRoutineEnv_t *env )
 {
 	
@@ -578,13 +605,14 @@ void co_yield( stCoRoutine_t *co )
 {
 	co_yield_env( co->env );
 }
-
+// 保存指定协程的执行栈空间，后续可以用于恢复执行
 void save_stack_buffer(stCoRoutine_t* occupy_co)
 {
 	///copy out
 	stStackMem_t* stack_mem = occupy_co->stack_mem;
 	int len = stack_mem->stack_bp - occupy_co->stack_sp;
-
+	// 上一次保存的内存块要释放掉
+	// 这里可以做一次优化，不用每次释放、分配内存
 	if (occupy_co->save_buffer)
 	{
 		free(occupy_co->save_buffer), occupy_co->save_buffer = NULL;
@@ -595,7 +623,7 @@ void save_stack_buffer(stCoRoutine_t* occupy_co)
 
 	memcpy(occupy_co->save_buffer, occupy_co->stack_sp, len);
 }
-
+// 协程切换，curr已经不再执行栈上了，pending_co是栈顶的协程
 void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co)
 {
  	stCoRoutineEnv_t* env = co_get_curr_thread_env();
@@ -611,6 +639,7 @@ void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co)
 	}
 	else 
 	{
+		// 如果为共享栈，则需要将当前执行的协程栈拷贝走,给下一个协程用
 		env->pending_co = pending_co;
 		//get last occupy co on the same stack mem
 		stCoRoutine_t* occupy_co = pending_co->stack_mem->occupy_co;
@@ -624,9 +653,9 @@ void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co)
 		}
 	}
 
-	//swap context
+	//swap context,切换协程
 	coctx_swap(&(curr->ctx),&(pending_co->ctx) );
-
+	// 重新切换回来，但是当前栈帧的局部变量可能有问题，因此重新获取
 	//stack buffer may be overwrite, so get again;
 	stCoRoutineEnv_t* curr_env = co_get_curr_thread_env();
 	stCoRoutine_t* update_occupy_co =  curr_env->occupy_co;
@@ -647,12 +676,13 @@ void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co)
 //int poll(struct pollfd fds[], nfds_t nfds, int timeout);
 // { fd,events,revents }
 struct stPollItem_t ;
+// 封装了一次poll调用使用到的数据，包括超时和poll的参数
 struct stPoll_t : public stTimeoutItem_t 
 {
-	struct pollfd *fds;
-	nfds_t nfds; // typedef unsigned long int nfds_t;
+	struct pollfd *fds; // epoll输入参数
+	nfds_t nfds; // epoll输入的文件描述符个数
 
-	stPollItem_t *pPollItems;
+	stPollItem_t *pPollItems; // 数组，大小由nfds决定
 
 	int iAllEventDetach;
 
@@ -702,6 +732,9 @@ static short EpollEvent2Poll( uint32_t events )
 }
 
 static stCoRoutineEnv_t* g_arrCoEnvPerThread[ 204800 ] = { 0 };
+// 为当前线程创建协程执行环境
+// - 创建主协程
+// - 创建epoll对象
 void co_init_curr_thread_env()
 {
 	pid_t pid = GetPid();	
@@ -709,6 +742,7 @@ void co_init_curr_thread_env()
 	stCoRoutineEnv_t *env = g_arrCoEnvPerThread[ pid ];
 
 	env->iCallStackSize = 0;
+	// 创建主协程
 	struct stCoRoutine_t *self = co_create_env( env, NULL, NULL,NULL );
 	self->cIsMain = 1;
 
@@ -727,12 +761,14 @@ stCoRoutineEnv_t *co_get_curr_thread_env()
 	return g_arrCoEnvPerThread[ GetPid() ];
 }
 
+// 唤醒待执行的协程
 void OnPollProcessEvent( stTimeoutItem_t * ap )
 {
 	stCoRoutine_t *co = (stCoRoutine_t*)ap->pArg;
 	co_resume( co );
 }
 
+// 事件被触发后回调
 void OnPollPreparePfn( stTimeoutItem_t * ap,struct epoll_event &e,stTimeoutItemLink_t *active )
 {
 	stPollItem_t *lp = (stPollItem_t *)ap;
@@ -745,7 +781,7 @@ void OnPollPreparePfn( stTimeoutItem_t * ap,struct epoll_event &e,stTimeoutItemL
 	if( !pPoll->iAllEventDetach )
 	{
 		pPoll->iAllEventDetach = 1;
-
+		// ??? 移除调用poll时注册的定时器
 		RemoveFromLink<stTimeoutItem_t,stTimeoutItemLink_t>( pPoll );
 
 		AddTail( active,pPoll );
@@ -753,7 +789,8 @@ void OnPollPreparePfn( stTimeoutItem_t * ap,struct epoll_event &e,stTimeoutItemL
 	}
 }
 
-
+// 所有协程都会在某个文件描述符上等待导致被换出，当文件描述符上有事件被触发后
+// 被从新拿来执行，因此优先级应该是根据epoll返回的描述符列表顺序确定的
 void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg )
 {
 	if( !ctx->result )
@@ -765,13 +802,16 @@ void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg )
 
 	for(;;)
 	{
-		int ret = co_epoll_wait( ctx->iEpollFd,result,stCoEpoll_t::_EPOLL_SIZE, 1 );
+		// 这里决定了定时器的精度是毫秒级了
+		// 不考虑其它耗时逻辑的执行，当999us时刻有一个描述符被触发，则对于1000us时刻超时的定时器，需要等到2000us才能被处理
+		int ret = co_epoll_wait( ctx->iEpollFd,result,stCoEpoll_t::_EPOLL_SIZE, 1 ); 
 
 		stTimeoutItemLink_t *active = (ctx->pstActiveList);
 		stTimeoutItemLink_t *timeout = (ctx->pstTimeoutList);
 
 		memset( timeout,0,sizeof(stTimeoutItemLink_t) );
 
+		// 将被触发的事件对象放入等待执行链表
 		for(int i=0;i<ret;i++)
 		{
 			stTimeoutItem_t *item = (stTimeoutItem_t*)result->events[i].data.ptr;
@@ -786,6 +826,7 @@ void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg )
 		}
 
 
+		// 取出所有超时的定时器，如果事件被触发了但是定时器没有触发，则在上面已经被从时间轮中移除了
 		unsigned long long now = GetTickMS();
 		TakeAllTimeout( ctx->pTimeout,now,timeout );
 
@@ -797,12 +838,13 @@ void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg )
 			lp = lp->pNext;
 		}
 
+		// 合并事件对象和超时对象，他们都是可执行的了
 		Join<stTimeoutItem_t,stTimeoutItemLink_t>( active,timeout );
 
+		// 依次执行就绪的协程
 		lp = active->head;
 		while( lp )
 		{
-
 			PopHead<stTimeoutItem_t,stTimeoutItemLink_t>( active );
             if (lp->bTimeout && now < lp->ullExpireTime) 
 			{
@@ -816,11 +858,13 @@ void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg )
 			}
 			if( lp->pfnProcess )
 			{
+				// 
 				lp->pfnProcess( lp );
 			}
 
 			lp = active->head;
 		}
+		// 调度用户自定义的函数，可以用来实现退出loop函数
 		if( pfn )
 		{
 			if( -1 == pfn( arg ) )
@@ -891,7 +935,7 @@ int co_poll_inner( stCoEpoll_t *ctx,struct pollfd fds[], nfds_t nfds, int timeou
 	int epfd = ctx->iEpollFd;
 	stCoRoutine_t* self = co_self();
 
-	//1.struct change
+	//1.struct change 堆上分配
 	stPoll_t& arg = *((stPoll_t*)malloc(sizeof(stPoll_t)));
 	memset( &arg,0,sizeof(arg) );
 
@@ -911,10 +955,10 @@ int co_poll_inner( stCoEpoll_t *ctx,struct pollfd fds[], nfds_t nfds, int timeou
 	memset( arg.pPollItems,0,nfds * sizeof(stPollItem_t) );
 
 	arg.pfnProcess = OnPollProcessEvent;
-	arg.pArg = GetCurrCo( co_get_curr_thread_env() );
+	arg.pArg = GetCurrCo( co_get_curr_thread_env() ); // 当前协程将要被切走，注册到epoll里面去，未来从那里恢复执行
 	
 	
-	//2. add epoll
+	//2. add epoll 加入所有的文件描述符
 	for(nfds_t i=0;i<nfds;i++)
 	{
 		arg.pPollItems[i].pSelf = arg.fds + i;
@@ -960,6 +1004,7 @@ int co_poll_inner( stCoEpoll_t *ctx,struct pollfd fds[], nfds_t nfds, int timeou
 	}
     else
 	{
+		// 定时器安装成功，切换执行流，后面条件达成后会在切换回来的
 		co_yield_env( co_get_curr_thread_env() );
 		iRaiseCnt = arg.iRaiseCnt;
 	}
